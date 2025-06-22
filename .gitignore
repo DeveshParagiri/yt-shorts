@@ -1,0 +1,14 @@
+env/
+downloads/
+.env
+.DS_Store
+.vscode/
+.idea/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+*.mp4
+
+__pycache__/
+automations-463516-2987a6762cd6.json

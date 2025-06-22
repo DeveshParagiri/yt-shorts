@@ -1,0 +1,50 @@
+=== ASSEMBLYAI WORD TIMING DEBUG ===
+
+Total words: 177
+Audio duration: ~60.0 seconds
+
+First 30 words with exact timing:
+--------------------------------------------------
+ 1.   0.40s -   0.56s (0.16s): "This"
+ 2.   0.56s -   0.88s (0.32s): "current"
+ 3.   0.88s -   1.64s (0.76s): "explosion"
+ 4.   1.64s -   1.80s (0.16s): "of"
+ 5.   1.80s -   2.12s (0.32s): "what's"
+ 6.   2.12s -   2.36s (0.24s): "possible"
+ 7.   2.36s -   2.68s (0.32s): "with"
+ 8.   2.68s -   3.04s (0.36s): "technology."
+ 9.   3.36s -   4.08s (0.72s): "Nvidia's"
+10.   4.08s -   4.20s (0.12s): "done"
+11.   4.20s -   4.36s (0.16s): "it"
+12.   4.36s -   4.64s (0.28s): "again."
+13.   4.80s -   5.08s (0.28s): "We"
+14.   5.08s -   5.24s (0.16s): "found"
+15.   5.24s -   5.68s (0.44s): "ourselves"
+16.   5.68s -   5.96s (0.28s): "being"
+17.   5.96s -   6.12s (0.16s): "one"
+18.   6.12s -   6.24s (0.12s): "of"
+19.   6.24s -   6.36s (0.12s): "the"
+20.   6.36s -   6.56s (0.20s): "most"
+21.   6.56s -   6.88s (0.32s): "important"
+22.   6.96s -   7.36s (0.40s): "technology"
+23.   7.44s -   7.84s (0.40s): "companies"
+24.   7.92s -   8.16s (0.24s): "in"
+25.   8.16s -   8.24s (0.08s): "the"
+26.   8.24s -   8.40s (0.16s): "world"
+27.   8.40s -   8.64s (0.24s): "and"
+28.   8.64s -   9.12s (0.48s): "potentially"
+29.   9.12s -   9.44s (0.32s): "ever."
+30.   9.44s -   9.72s (0.28s): "A"
+
+Raw millisecond data (first 10 words):
+--------------------------------------------------
+ 1. start=400ms, end=560ms, text="This"
+ 2. start=560ms, end=880ms, text="current"
+ 3. start=880ms, end=1640ms, text="explosion"
+ 4. start=1640ms, end=1800ms, text="of"
+ 5. start=1800ms, end=2120ms, text="what's"
+ 6. start=2120ms, end=2360ms, text="possible"
+ 7. start=2360ms, end=2680ms, text="with"
+ 8. start=2680ms, end=3040ms, text="technology."
+ 9. start=3360ms, end=4080ms, text="Nvidia's"
+10. start=4080ms, end=4200ms, text="done"

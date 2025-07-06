@@ -1,6 +1,8 @@
 import os
 import json
 import glob
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
@@ -8,9 +10,36 @@ from openai import AzureOpenAI
 load_dotenv()
 
 # ====== CONFIG ======
+GOOGLE_SHEET_NAME = os.getenv('GOOGLE_SHEET_NAME', 'Shorts Pipeline')
+SHEET_TAB_NAME = os.getenv('SHEET_TAB_NAME', 'Sheet1')
+CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE', 'automations-463516-2987a6762cd6.json')
 DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', 'downloads')
 HIGHLIGHTS_FILE = os.path.join(DOWNLOAD_DIR, 'highlights.json')
 # =====================
+
+def get_video_url_from_sheet():
+    """Get the video URL from the Google Sheet for the row with captions_downloaded status"""
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+        gc = gspread.authorize(creds)
+        sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SHEET_TAB_NAME)
+        data = sheet.get_all_records()
+        
+        # Find row with status "captions_downloaded"
+        for row in data:
+            if row.get("status", "").lower() == "captions_downloaded":
+                video_url = row.get("podcast_url", "").strip()
+                if video_url:
+                    print(f"[INFO] Found video URL from sheet: {video_url}")
+                    return video_url
+        
+        print("[WARNING] No video URL found in sheet with captions_downloaded status")
+        return None
+        
+    except Exception as e:
+        print(f"[ERROR] Error reading from Google Sheet: {e}")
+        return None
 
 def parse_vtt_captions():
     """Find and parse VTT caption files"""
@@ -18,11 +47,11 @@ def parse_vtt_captions():
     vtt_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.vtt"))
     
     if not vtt_files:
-        print("[❌] No VTT caption files found")
+        print("[ERROR] No VTT caption files found")
         return None
         
     vtt_file = vtt_files[0]  # Use first VTT file found
-    print(f"[📝] Parsing captions: {vtt_file}")
+    print(f"[INFO] Parsing captions: {vtt_file}")
     
     segments = []
     current_segment = None
@@ -69,7 +98,7 @@ def parse_vtt_captions():
         
         i += 1
     
-    print(f"[✅] Parsed {len(segments)} caption segments")
+    print(f"[SUCCESS] Parsed {len(segments)} caption segments")
     return segments
 
 def vtt_time_to_seconds(time_str):
@@ -87,7 +116,7 @@ def vtt_time_to_seconds(time_str):
 
 def find_viral_highlights(segments):
     """Use GPT-4o to find viral highlight moments"""
-    print("[🧠] Analyzing content with GPT-4o for viral moments...")
+    print("[AI] Analyzing content with GPT-4o for viral moments...")
     
     # Combine segments into full transcript with timestamps
     full_text = ""
@@ -163,7 +192,7 @@ RULES:
         )
         
         ai_response = response.choices[0].message.content.strip()
-        print(f"[🧠] GPT-4o found 1-minute viral segment")
+        print(f"[AI] GPT-4o found 1-minute viral segment")
         
         # Try to parse JSON from response
         try:
@@ -176,7 +205,7 @@ RULES:
             end_idx = ai_response.rfind(']') + 1
             
             if start_idx == -1 or end_idx == 0:
-                print(f"[❌] No JSON found in response:\n{ai_response}")
+                print(f"[ERROR] No JSON found in response:\n{ai_response}")
                 return None
                 
             json_str = ai_response[start_idx:end_idx]
@@ -189,11 +218,11 @@ RULES:
                 end_seconds = parse_mmss_to_seconds(highlight['end_time'])
                 duration = end_seconds - start_seconds
                 
-                print(f"[🎯] Found {duration:.1f}s segment: {highlight['summary']}")
+                print(f"[TARGET] Found {duration:.1f}s segment: {highlight['summary']}")
                 
                 # Validation for 1-minute clips
                 if duration < 45 or duration > 75:
-                    print(f"[⚠️] Duration {duration}s is not close to 60 seconds")
+                    print(f"[WARNING] Duration {duration}s is not close to 60 seconds")
                     continue
                 
                 segments.append({
@@ -207,12 +236,12 @@ RULES:
             return segments
             
         except json.JSONDecodeError as e:
-            print(f"[❌] Failed to parse JSON: {e}")
+            print(f"[ERROR] Failed to parse JSON: {e}")
             print(f"Raw response:\n{ai_response}")
             return None
             
     except Exception as e:
-        print(f"[❌] Error calling GPT-4o: {e}")
+        print(f"[ERROR] Error calling GPT-4o: {e}")
         return None
 
 def parse_mmss_to_seconds(mmss_str):
@@ -223,39 +252,52 @@ def parse_mmss_to_seconds(mmss_str):
 def main():
     print("=== VIRAL HIGHLIGHT DETECTION ===\n")
     
-    # Step 1: Parse VTT captions
+    # Step 1: Get video URL from sheet
+    video_url = get_video_url_from_sheet()
+    if not video_url:
+        print("[ERROR] Could not get video URL from sheet")
+        return
+    
+    # Step 2: Parse VTT captions
     segments = parse_vtt_captions()
     if not segments:
         return
     
     total_duration = segments[-1]['end'] if segments else 0
-    print(f"[📊] Total content: {total_duration/60:.1f} minutes")
+    print(f"[INFO] Total content: {total_duration/60:.1f} minutes")
     
-    # Step 2: Find viral highlights with GPT-4o
+    # Step 3: Find viral highlights with GPT-4o
     highlights = find_viral_highlights(segments)
     
     if not highlights:
-        print("[❌] No viral highlights found")
+        print("[ERROR] No viral highlights found")
         return
     
-    # Step 3: Save highlights
+    # Step 4: Add video URL to highlights data
+    highlights_data = {
+        'video_url': video_url,
+        'highlights': highlights
+    }
+    
+    # Step 5: Save highlights with video URL
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     with open(HIGHLIGHTS_FILE, 'w') as f:
-        json.dump(highlights, f, indent=2)
+        json.dump(highlights_data, f, indent=2)
     
-    print(f"\n[✅] Found {len(highlights)} viral highlights:")
-    print(f"[💾] Saved to: {HIGHLIGHTS_FILE}")
+    print(f"\n[SUCCESS] Found {len(highlights)} viral highlights:")
+    print(f"[SAVE] Saved to: {HIGHLIGHTS_FILE}")
+    print(f"[VIDEO] Source URL: {video_url}")
     
-    # Step 4: Preview highlights
+    # Step 6: Preview highlights
     for i, highlight in enumerate(highlights, 1):
         start_min = int(highlight['start'] // 60)
         start_sec = int(highlight['start'] % 60)
         end_min = int(highlight['end'] // 60) 
         end_sec = int(highlight['end'] % 60)
         
-        print(f"\n🔥 HIGHLIGHT {i} (Score: {highlight['viral_score']}/10)")
-        print(f"⏱️  {start_min:02d}:{start_sec:02d} - {end_min:02d}:{end_sec:02d} ({highlight['duration']:.1f}s)")
-        print(f"🎯 {highlight['summary']}")
+        print(f"\n[TARGET] HIGHLIGHT {i} (Score: {highlight['viral_score']}/10)")
+        print(f"[TIME] {start_min:02d}:{start_sec:02d} - {end_min:02d}:{end_sec:02d} ({highlight['duration']:.1f}s)")
+        print(f"[SUMMARY] {highlight['summary']}")
 
 if __name__ == "__main__":
     main() 

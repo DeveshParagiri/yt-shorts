@@ -1,6 +1,6 @@
 # YouTube Shorts Pipeline 🎬
 
-Automatically create viral YouTube Shorts from podcast episodes using AI-powered highlight detection and dynamic word-level captions.
+Automatically create viral YouTube Shorts from YouTube videos using AI-powered highlight detection and dynamic word-level captions.
 
 ## What This Does 📋
 
@@ -177,5 +177,3 @@ If you encounter issues:
 4. Verify your Google Sheets setup
 
 ---
-
-**Made with ❤️ for content creators who want to automate their YouTube Shorts workflow!** 

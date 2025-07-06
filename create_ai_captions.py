@@ -40,21 +40,18 @@ def transcribe_audio(audio_file):
 
     headers = {'authorization': ASSEMBLYAI_API_KEY}
 
-    # Upload audio
     print("[UPLOAD] Uploading to AssemblyAI...")
     with open(audio_file, 'rb') as f:
         response = requests.post(f'{ASSEMBLYAI_BASE_URL}/upload', headers=headers, files={'file': ('audio.mp3', f, 'audio/mpeg')})
     response.raise_for_status()
     audio_url = response.json()['upload_url']
 
-    # Request transcription
     response = requests.post(f'{ASSEMBLYAI_BASE_URL}/transcript',
                              json={'audio_url': audio_url, 'format_text': True, 'language_code': 'en_us'},
                              headers=headers)
     response.raise_for_status()
     transcript_id = response.json()['id']
 
-    # Poll for completion
     print("[AI] Transcribing...")
     while True:
         response = requests.get(f'{ASSEMBLYAI_BASE_URL}/transcript/{transcript_id}', headers=headers)
@@ -117,8 +114,28 @@ def get_video_info(video_file):
             }
     raise Exception("No video stream found")
 
+def remove_unnecessary_backslashes(text):
+    """
+    Removes stray backslashes not part of ASS override codes.
+    Keeps backslashes used in override tags such as \c, \b, etc.
+    """
+    import re
+    def clean_line(line):
+        # Only remove slashes outside override tags {}
+        parts = re.split(r'(\{.*?\})', line)
+        cleaned = ''
+        for p in parts:
+            if p.startswith('{') and p.endswith('}'):
+                cleaned += p
+            else:
+                cleaned += p.replace('\\', '')
+        return cleaned
+
+    cleaned_lines = [clean_line(l) for l in text.splitlines()]
+    return '\n'.join(cleaned_lines)
+
 def create_ass_subtitles(captions, output_file, video_info):
-    """Create ASS subtitle file with in-place word highlighting"""
+    """Create ASS subtitle file with in-place word highlighting and persistent white baseline"""
     print(f"[INFO] Creating in-place word highlighting subtitles: {output_file}")
     ass_content = f"""[Script Info]
 Title: AI In-Place Word Captions
@@ -129,7 +146,7 @@ WrapStyle: 1
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Impact,{int(video_info['height']/10)},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,3,2,2,30,30,80,1
+Style: Default,Impact,{int(video_info['height']/12)},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,3,2,2,30,30,80,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -137,6 +154,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     for caption in captions:
         words = caption['words']
+        caption_start = caption['start']
+        caption_end = caption['end']
+
+        # Add a persistent all-white line at lower Layer (Layer 0)
+        start_str = f"{int(caption_start//3600)}:{int((caption_start%3600)//60):02d}:{int(caption_start%60):02d}.{int((caption_start%1)*100):02d}"
+        end_str = f"{int(caption_end//3600)}:{int((caption_end%3600)//60):02d}:{int(caption_end%60):02d}.{int((caption_end%1)*100):02d}"
+        all_white_text = ' '.join(w['text'].upper() for w in words).replace(',', '\\,')
+        ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{all_white_text}\n"
+
+        # Then overlay per-word highlights on Layer 1
         for i, word in enumerate(words):
             word_start = word['start'] / 1000.0
             word_end = word['end'] / 1000.0
@@ -144,22 +171,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             start_str = f"{int(word_start//3600)}:{int((word_start%3600)//60):02d}:{int(word_start%60):02d}.{int((word_start%1)*100):02d}"
             end_str = f"{int(word_end//3600)}:{int((word_end%3600)//60):02d}:{int(word_end%60):02d}.{int((word_end%1)*100):02d}"
 
-            # Build the highlighted text with correct { } wrapping for ASS overrides
             highlighted_words = []
             for j, w in enumerate(words):
-                if i == j:
+                if j == i:
                     highlighted_words.append(f"{{\\c&H0000FF&}}{w['text'].upper()}{{\\c&HFFFFFF&}}")
                 else:
                     highlighted_words.append(w['text'].upper())
-            highlighted_text = ' '.join(highlighted_words)
-            highlighted_text = highlighted_text.replace(',', '\\,')
+            highlighted_text = ' '.join(highlighted_words).replace(',', '\\,')
 
-            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{highlighted_text}\n"
+            ass_content += f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{highlighted_text}\n"
 
+    # Write initial file
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(ass_content)
     print("[SUCCESS] Subtitle file created")
+
+    # Remove unnecessary backslashes while preserving override tags
+    with open(output_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    content_clean = remove_unnecessary_backslashes(content)
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(content_clean)
+    print("[CLEANUP] Removed stray backslashes while preserving overrides")
+
     return output_file
+
 
 def create_captioned_video_ffmpeg(input_video, subtitle_file, output_video):
     """Create final video with captions using ffmpeg and ASS subtitles"""
@@ -197,7 +233,7 @@ def process_video(input_video, output_video):
     os.remove(audio_file)
 
 def main():
-    print("=== AI CAPTION CREATOR (Word Highlight Fix) ===")
+    print("=== AI CAPTION CREATOR (Final Clean Version) ===")
     if not ASSEMBLYAI_API_KEY:
         raise Exception("ASSEMBLYAI_API_KEY not set")
     if not os.path.exists(HIGHLIGHTS_FILE):

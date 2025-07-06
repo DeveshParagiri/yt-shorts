@@ -59,6 +59,27 @@ def update_sheet_status(sheet, row_idx, status):
     except Exception as e:
         print(f"[WARNING] Failed to update sheet: {e}")
 
+def convert_to_vertical(input_video, output_video):
+    """Convert video to vertical format with black padding for YouTube Shorts"""
+    print(f"[VERTICAL] Converting {input_video} to vertical format...")
+    
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', input_video,
+        '-vf', 'pad=iw:2*trunc(iw*16/18):0:(oh-ih)/2:black',
+        '-c:a', 'copy',
+        '-preset', 'fast',
+        output_video
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True)
+        print(f"[SUCCESS] Converted to vertical: {output_video}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to convert to vertical: {e}")
+        return False
+
 def main():
     print("=== DOWNLOADING VIRAL SEGMENTS ===\n")
     
@@ -118,11 +139,26 @@ def main():
     for i, highlight in enumerate(highlights, 1):
         start_time = highlight['start']
         duration = highlight['duration']
-        output_file = os.path.join(OUTPUT_DIR, f'segment_{i}.mp4')
+        temp_output_file = os.path.join(OUTPUT_DIR, f'segment_{i}_temp.mp4')
+        final_output_file = os.path.join(OUTPUT_DIR, f'segment_{i}.mp4')
         
         print(f"\n[TARGET] Downloading segment {i}: {highlight['summary'][:50]}...")
-        if download_segment(video_url, start_time, duration, output_file):
-            downloaded_segments.append(output_file)
+        if download_segment(video_url, start_time, duration, temp_output_file):
+            # Convert to vertical format
+            if convert_to_vertical(temp_output_file, final_output_file):
+                # Clean up temporary file
+                try:
+                    os.remove(temp_output_file)
+                except:
+                    pass
+                downloaded_segments.append(final_output_file)
+            else:
+                # If vertical conversion fails, use the original
+                try:
+                    os.rename(temp_output_file, final_output_file)
+                    downloaded_segments.append(final_output_file)
+                except:
+                    pass
     
     # Update status based on results
     if downloaded_segments:

@@ -1,303 +1,268 @@
 import os
 import json
 import glob
+import logging
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import requests
 from dotenv import load_dotenv
+from oauth2client.service_account import ServiceAccountCredentials
 from openai import AzureOpenAI
 
 # Load environment variables
 load_dotenv()
 
-# ====== CONFIG ======
+# ====== CONFIG ====== #
 GOOGLE_SHEET_NAME = os.getenv('GOOGLE_SHEET_NAME', 'Shorts Pipeline')
 SHEET_TAB_NAME = os.getenv('SHEET_TAB_NAME', 'Sheet1')
 CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE', 'automations-463516-2987a6762cd6.json')
 DOWNLOAD_DIR = os.getenv('DOWNLOAD_DIR', 'downloads')
 HIGHLIGHTS_FILE = os.path.join(DOWNLOAD_DIR, 'highlights.json')
-# =====================
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# ==================== #
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
+
+def notify_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram credentials not configured.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            logger.error(f"Telegram notify failed: {response.text}")
+    except Exception as e:
+        logger.error(f"Telegram error: {e}")
 
 def get_video_url_from_sheet():
-    """Get the video URL from the Google Sheet for the row with captions_downloaded status"""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
         gc = gspread.authorize(creds)
         sheet = gc.open(GOOGLE_SHEET_NAME).worksheet(SHEET_TAB_NAME)
-        data = sheet.get_all_records()
-        
-        # Find row with status "captions_downloaded"
-        for row in data:
+        for row in sheet.get_all_records():
             if row.get("status", "").lower() == "captions_downloaded":
                 video_url = row.get("podcast_url", "").strip()
                 if video_url:
-                    print(f"[INFO] Found video URL from sheet: {video_url}")
+                    logger.info(f"Found video URL: {video_url}")
                     return video_url
-        
-        print("[WARNING] No video URL found in sheet with captions_downloaded status")
+        logger.warning("No video URL found with 'captions_downloaded' status")
         return None
-        
     except Exception as e:
-        print(f"[ERROR] Error reading from Google Sheet: {e}")
+        logger.error(f"Sheet error: {e}")
         return None
 
 def parse_vtt_captions():
-    """Find and parse VTT caption files"""
-    # Look for VTT files in downloads
     vtt_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*.vtt"))
-    
     if not vtt_files:
-        print("[ERROR] No VTT caption files found")
+        logger.error("No VTT caption files found")
         return None
-        
-    vtt_file = vtt_files[0]  # Use first VTT file found
-    print(f"[INFO] Parsing captions: {vtt_file}")
-    
+
+    vtt_file = vtt_files[0]
+    logger.info(f"Parsing VTT file: {vtt_file}")
+
     segments = []
-    current_segment = None
-    
     with open(vtt_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    
+
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        
-        # Skip header and empty lines
         if line.startswith('WEBVTT') or line == '' or line.startswith('NOTE') or line.isdigit():
             i += 1
             continue
-            
-        # Timeline format: 00:00:10.500 --> 00:00:13.000
+
         if '-->' in line:
             parts = line.split(' --> ')
             if len(parts) == 2:
                 start_time = vtt_time_to_seconds(parts[0])
                 end_time = vtt_time_to_seconds(parts[1])
-                
-                # Collect all text lines until next timestamp or end
-                text_lines = []
                 i += 1
+                text_lines = []
                 while i < len(lines) and '-->' not in lines[i].strip() and lines[i].strip() != '':
-                    if not lines[i].strip().isdigit():  # Skip sequence numbers
-                        clean_text = lines[i].strip()
-                        # Remove VTT formatting tags
-                        clean_text = clean_text.replace('<c>', '').replace('</c>', '')
-                        clean_text = clean_text.replace('<v ', '').replace('>', '')
-                        if clean_text:
-                            text_lines.append(clean_text)
+                    clean = lines[i].strip().replace('<c>', '').replace('</c>', '').replace('<v ', '').replace('>', '')
+                    if clean and not clean.isdigit():
+                        text_lines.append(clean)
                     i += 1
-                
                 if text_lines:
-                    segments.append({
-                        'start': start_time,
-                        'end': end_time,
-                        'text': ' '.join(text_lines)
-                    })
+                    segments.append({'start': start_time, 'end': end_time, 'text': ' '.join(text_lines)})
                 continue
-        
         i += 1
-    
-    print(f"[SUCCESS] Parsed {len(segments)} caption segments")
+
+    logger.info(f"Parsed {len(segments)} caption segments")
     return segments
 
 def vtt_time_to_seconds(time_str):
-    """Convert VTT timestamp to seconds"""
-    # Format: 00:00:10.500 or 00:10.500
     parts = time_str.split(':')
-    if len(parts) == 3:  # HH:MM:SS.mmm
-        hours, minutes, seconds = parts
-        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-    elif len(parts) == 2:  # MM:SS.mmm
-        minutes, seconds = parts
-        return int(minutes) * 60 + float(seconds)
-    else:
-        return float(parts[0])
+    if len(parts) == 3:
+        h, m, s = parts
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    elif len(parts) == 2:
+        m, s = parts
+        return int(m) * 60 + float(s)
+    return float(parts[0])
+
+def parse_mmss_to_seconds(mmss_str):
+    m, s = map(int, mmss_str.strip().split(':'))
+    return m * 60 + s
 
 def find_viral_highlights(segments):
-    """Use GPT-4o to find viral highlight moments"""
-    print("[AI] Analyzing content with GPT-4o for viral moments...")
-    
-    # Combine segments into full transcript with timestamps
-    full_text = ""
-    for segment in segments:
-        timestamp = f"[{int(segment['start']//60):02d}:{int(segment['start']%60):02d}]"
-        full_text += f"{timestamp} {segment['text']}\n"
-    
-    # Limit to manageable size for GPT-4o (keep first 8000 chars)
-    if len(full_text) > 8000:
-        full_text = full_text[:8000] + "\n...[transcript continues]"
-    
-    client = AzureOpenAI(
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-03-01-preview"),
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        api_key=os.getenv("AZURE_OPENAI_API_KEY")
-    )
-    
-    # Improved Hormozi-style viral moment detection prompt
+    logger.info("🧠 Analyzing captions with GPT-4o...")
+
+    transcript = ""
+    for seg in segments:
+        timestamp = f"[{int(seg['start'] // 60):02}:{int(seg['start'] % 60):02}]"
+        transcript += f"{timestamp} {seg['text']}\n"
+
+    if len(transcript) > 8000:
+        transcript = transcript[:8000] + "\n...[truncated]"
+
     prompt = f"""
-FIND 3 VIRAL 60-SECOND YOUTUBE SHORTS FROM THIS PODCAST TRANSCRIPT.
+You are an expert content editor working on short-form viral videos.
 
-You need to find 3 different continuous 60-second segments that will go viral on YouTube Shorts.
+Your task is to analyze the following transcript of a long-form video (e.g., podcast, interview, talk) and extract **exactly 3 non-overlapping moments** that are likely to go viral when turned into short-form clips.
 
-WHAT MAKES EACH VIRAL:
-- Strong emotional hook at the beginning
-- Builds tension or curiosity throughout  
-- Contains shocking revelations or contrarian takes
-- Includes specific numbers, stats, or examples
-- Has a satisfying payoff or cliffhanger ending
-- Makes people want to share or comment
+🎯 REQUIREMENTS:
 
-TRANSCRIPT WITH TIMESTAMPS:
-{full_text}
+1. You must return **exactly 3 moments** — only return fewer if the transcript is absolutely too short.
+2. Each moment must be **between 30 and 90 seconds long**, inclusive.
+3. All moments must be **non-overlapping** in time.
+4. Each moment must start and end at **natural points in speech** — do not cut mid-sentence or mid-word.
+5. Timestamps must be in `MM:SS` format (e.g., "01:20").
+6. Select **compelling and emotionally engaging moments** that would perform well on YouTube Shorts, TikTok, or Instagram Reels.
 
-Find the 3 BEST different 60-second segments and return ONLY this JSON:
+📦 OUTPUT FORMAT (JSON only):
+
+```json
 [
   {{
     "start_time": "MM:SS",
     "end_time": "MM:SS",
-    "summary": "Why this will go viral",
-    "hook": "Opening line that grabs attention"
+    "hook": "Opening line of the clip that grabs attention",
+    "summary": "One-line explanation of why this moment is viral-worthy"
   }},
-  {{
-    "start_time": "MM:SS", 
-    "end_time": "MM:SS",
-    "summary": "Why this will go viral",
-    "hook": "Opening line that grabs attention"
-  }},
-  {{
-    "start_time": "MM:SS",
-    "end_time": "MM:SS", 
-    "summary": "Why this will go viral",
-    "hook": "Opening line that grabs attention"
-  }}
+  ...
 ]
+If you cannot find 3 valid moments within the 30–90 second duration range, return as many as possible and explain why in a comment above the JSON, like:
+// Only 2 valid clips due to short transcript. All clips strictly within 30–90s.
 
-RULES:
-- Each must be 55-65 seconds long
-- No overlapping time ranges
-- Use exact [MM:SS] timestamps from transcript
-- Pick segments with highest viral potential
-- Return ONLY the JSON array, nothing else
+Now analyze the transcript and return the 3 best viral moments.
+
+📄 TRANSCRIPT:
+{transcript}
 """
 
     try:
-        response = client.chat.completions.create(
-            model=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o"),  # Use chat deployment
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500  # Much smaller since we only need one result
+        client = AzureOpenAI(
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-03-01-preview"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key=os.getenv("AZURE_OPENAI_API_KEY")
         )
-        
-        ai_response = response.choices[0].message.content.strip()
-        print(f"[AI] GPT-4o found 1-minute viral segment")
-        
-        # Try to parse JSON from response
-        try:
-            # Clean up response and find JSON
-            if ai_response.startswith('```json'):
-                ai_response = ai_response.replace('```json', '').replace('```', '')
-            
-            # Find JSON object in response
-            start_idx = ai_response.find('[')
-            end_idx = ai_response.rfind(']') + 1
-            
-            if start_idx == -1 or end_idx == 0:
-                print(f"[ERROR] No JSON found in response:\n{ai_response}")
-                return None
-                
-            json_str = ai_response[start_idx:end_idx]
-            highlights = json.loads(json_str)
-            
-            # Convert to seconds and validate
-            segments = []
-            for highlight in highlights:
-                start_seconds = parse_mmss_to_seconds(highlight['start_time'])
-                end_seconds = parse_mmss_to_seconds(highlight['end_time'])
-                duration = end_seconds - start_seconds
-                
-                print(f"[TARGET] Found {duration:.1f}s segment: {highlight['summary']}")
-                
-                # Validation for 1-minute clips
-                if duration < 45 or duration > 75:
-                    print(f"[WARNING] Duration {duration}s is not close to 60 seconds")
+
+        response = client.chat.completions.create(
+            model=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=800
+        )
+
+        ai_text = response.choices[0].message.content.strip()
+
+        if ai_text.startswith("```json"):
+            ai_text = ai_text.replace("```json", "").replace("```", "")
+        elif ai_text.startswith("```"):
+            ai_text = ai_text.replace("```", "")
+
+        json_start = ai_text.find('[')
+        json_end = ai_text.rfind(']') + 1
+        json_str = ai_text[json_start:json_end]
+
+        highlights_raw = json.loads(json_str)
+        logger.info(f"GPT returned {len(highlights_raw)} highlight(s)")
+
+        seen_ranges = []
+        segments_out = []
+
+        for h in highlights_raw:
+            try:
+                start_sec = parse_mmss_to_seconds(h['start_time'])
+                end_sec = parse_mmss_to_seconds(h['end_time'])
+                duration = end_sec - start_sec
+
+                if not (30 <= duration <= 90):
+                    logger.warning(f"Skipping: duration {duration}s out of bounds")
                     continue
-                
-                segments.append({
-                    'start': start_seconds,
-                    'end': end_seconds,
+
+                # Check for overlaps
+                if any(abs(start_sec - s['start']) < 5 or abs(end_sec - s['end']) < 5 for s in segments_out):
+                    logger.warning(f"Skipping overlapping segment: {h}")
+                    continue
+
+                segments_out.append({
+                    'start': start_sec,
+                    'end': end_sec,
                     'duration': duration,
-                    'summary': highlight['summary'],
-                    'viral_score': 10  # Single best segment
+                    'summary': h['summary'],
+                    'hook': h['hook'],
+                    'viral_score': 10
                 })
-            
-            return segments
-            
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse JSON: {e}")
-            print(f"Raw response:\n{ai_response}")
-            return None
-            
-    except Exception as e:
-        print(f"[ERROR] Error calling GPT-4o: {e}")
+                logger.info(f"Segment: {h['hook']} → {duration:.1f}s")
+
+            except Exception as parse_err:
+                logger.warning(f"Skipping invalid entry: {h} ({parse_err})")
+
+        if len(segments_out) != 3:
+            notify_telegram(f"⚠️ GPT returned {len(segments_out)} valid highlights (expected 3).")
+
+        return segments_out[:3]
+
+    except json.JSONDecodeError as json_err:
+        logger.error(f"❌ JSON parse error: {json_err}")
+        logger.error(f"Raw GPT output:\n{ai_text}")
+        notify_telegram("❌ JSON parsing failed for GPT highlights.")
         return None
 
-def parse_mmss_to_seconds(mmss_str):
-    """Convert MM:SS to seconds"""
-    parts = mmss_str.split(':')
-    return int(parts[0]) * 60 + int(parts[1])
+    except Exception as e:
+        logger.error(f"❌ GPT error: {e}")
+        notify_telegram("❌ GPT call failed.")
+        return None
+
 
 def main():
-    print("=== VIRAL HIGHLIGHT DETECTION ===\n")
-    
-    # Step 1: Get video URL from sheet
+    logger.info("=== VIRAL HIGHLIGHT DETECTION ===")
     video_url = get_video_url_from_sheet()
     if not video_url:
-        print("[ERROR] Could not get video URL from sheet")
+        notify_telegram("❌ No video URL found.")
         return
-    
-    # Step 2: Parse VTT captions
+
     segments = parse_vtt_captions()
     if not segments:
+        notify_telegram("❌ No captions parsed.")
         return
-    
-    total_duration = segments[-1]['end'] if segments else 0
-    print(f"[INFO] Total content: {total_duration/60:.1f} minutes")
-    
-    # Step 3: Find viral highlights with GPT-4o
+
     highlights = find_viral_highlights(segments)
-    
     if not highlights:
-        print("[ERROR] No viral highlights found")
+        notify_telegram("❌ No viral highlights found.")
         return
-    
-    # Step 4: Add video URL to highlights data
+
     highlights_data = {
         'video_url': video_url,
         'highlights': highlights
     }
-    
-    # Step 5: Save highlights with video URL
+
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     with open(HIGHLIGHTS_FILE, 'w') as f:
         json.dump(highlights_data, f, indent=2)
-    
-    print(f"\n[SUCCESS] Found {len(highlights)} viral highlights:")
-    print(f"[SAVE] Saved to: {HIGHLIGHTS_FILE}")
-    print(f"[VIDEO] Source URL: {video_url}")
-    
-    # Step 6: Preview highlights
-    for i, highlight in enumerate(highlights, 1):
-        start_min = int(highlight['start'] // 60)
-        start_sec = int(highlight['start'] % 60)
-        end_min = int(highlight['end'] // 60) 
-        end_sec = int(highlight['end'] % 60)
-        
-        print(f"\n[TARGET] HIGHLIGHT {i} (Score: {highlight['viral_score']}/10)")
-        print(f"[TIME] {start_min:02d}:{start_sec:02d} - {end_min:02d}:{end_sec:02d} ({highlight['duration']:.1f}s)")
-        print(f"[SUMMARY] {highlight['summary']}")
+
+    logger.info(f"Saved highlights to: {HIGHLIGHTS_FILE}")
+    notify_telegram(f"✅ Found {len(highlights)} viral highlights!\n[✓] Saved: {HIGHLIGHTS_FILE}")
+
+    for i, h in enumerate(highlights, 1):
+        logger.info(f"HIGHLIGHT {i}: {h['hook']} → {h['summary']} ({h['duration']:.1f}s)")
 
 if __name__ == "__main__":
-    main() 
+    main()

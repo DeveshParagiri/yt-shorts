@@ -15,8 +15,7 @@ The result? Ready-to-upload YouTube Shorts with professional captions that highl
 ## Features ✨
 
 - 🤖 **AI-Powered Highlight Detection**: Uses GPT-4o to find the most viral 60-second segments
-- 🎯 **Dynamic Word Highlighting**: Each word lights up in red as it's spoken
-- 🎨 **Professional Captions**: Blue and green color coding for different word groups
+- 🎯 **Dynamic Word Highlighting**: Each word lights up in blue as it's spoken
 - 📊 **Google Sheets Integration**: Manage your pipeline through a spreadsheet
 - 🔄 **Automated Pipeline**: Run everything with one command
 - 📱 **YouTube Shorts Optimized**: Perfect 9:16 aspect ratio and timing
